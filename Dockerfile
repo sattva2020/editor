@@ -1,37 +1,25 @@
-FROM oven/bun:1.3 AS base
+FROM oven/bun:1.3 AS builder
 
-# Install dependencies only
-FROM base AS deps
 WORKDIR /app
 
-# Copy workspace config files
-COPY package.json bun.lock turbo.json ./
-COPY apps/editor/package.json ./apps/editor/
-COPY packages/ ./packages/
-COPY tooling/ ./tooling/
-
-# Install all dependencies
-RUN bun install --frozen-lockfile
-
-# Build the application
-FROM base AS builder
-WORKDIR /app
-
-# Need node for next build
-RUN apt-get update && apt-get install -y nodejs npm && rm -rf /var/lib/apt/lists/*
-
-COPY --from=deps /app/node_modules ./node_modules
-COPY --from=deps /app/apps/editor/node_modules ./apps/editor/node_modules
-COPY --from=deps /app/packages/ ./packages/
-COPY --from=deps /app/tooling/ ./tooling/
+# Copy everything
 COPY . .
+
+# Install dependencies
+RUN bun install --frozen-lockfile
 
 # Skip env validation during build
 ENV SKIP_ENV_VALIDATION=true
 ENV NEXT_TELEMETRY_DISABLED=1
 
-# Build the editor app using turbo
-RUN bun run build --filter=editor
+# Install Node.js for Next.js build
+RUN apt-get update && apt-get install -y curl \
+    && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+    && apt-get install -y nodejs \
+    && rm -rf /var/lib/apt/lists/*
+
+# Build the editor app
+RUN bunx turbo run build --filter=editor
 
 # Production image
 FROM node:22-slim AS runner
@@ -41,12 +29,14 @@ ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
 ENV PORT=3000
 
-# Copy the built Next.js app
-COPY --from=builder /app/apps/editor/.next ./.next
-COPY --from=builder /app/apps/editor/public ./public
-COPY --from=builder /app/apps/editor/package.json ./package.json
+# Copy entire workspace (needed for internal packages resolution)
 COPY --from=builder /app/node_modules ./node_modules
-COPY --from=builder /app/apps/editor/node_modules ./apps/editor/node_modules
+COPY --from=builder /app/package.json ./package.json
+COPY --from=builder /app/apps/editor ./apps/editor
+COPY --from=builder /app/packages ./packages
+COPY --from=builder /app/tooling ./tooling
+
+WORKDIR /app/apps/editor
 
 EXPOSE 3000
 
